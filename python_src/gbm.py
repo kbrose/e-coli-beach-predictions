@@ -26,10 +26,10 @@ def gbm(timestamps, predictors, classes):
            is the GBM found by leaving the specified year out of the
            training set.
     '''
-    timestamps = timestamps.map(lambda x: x.year)
+    years = timestamps.map(lambda x: x.year)
 
-    start = timestamps.min()
-    stop = timestamps.max()
+    start = years.min()
+    stop = years.max()
     stop = min(stop, 2014) # do not include 2015
 
     roc_ax = plt.subplots(1)[1]
@@ -38,17 +38,38 @@ def gbm(timestamps, predictors, classes):
     clfs = dict()
 
     for yr in range(start, stop+1):
-        train_indices = np.array((timestamps < yr) | (timestamps > yr))
+        train_indices = np.array((years < yr) | (years > yr))
 
-        clf = sklearn.ensemble.GradientBoostingClassifier(
+        clf_historic = sklearn.ensemble.GradientBoostingClassifier(
             n_estimators=100, learning_rate=0.05,
-            max_depth=4, subsample=0.9, verbose=True
+            max_depth=4, subsample=0.8, verbose=False
         )
-        clf.fit(predictors.ix[train_indices,:], classes[train_indices])
+        clf_historic.fit(predictors.ix[train_indices,:], classes[train_indices])
 
-        clfs[yr] = clf
+        clfs[yr] = clf_historic
 
-        predictions = clf.predict_proba(predictors.ix[~train_indices,:])[:,1]
+        predictions = clf_historic.predict_proba(predictors.ix[~train_indices,:])[:,1]
+
+        days_of_year = timestamps.ix[~train_indices].map(lambda x: x.dayofyear)
+        this_year_preds = predictors.ix[~train_indices,:]
+        this_year_class = classes[~train_indices]
+        for day_break in range(days_of_year.min()+14, days_of_year.max()+1, 14):
+            try:
+                online_train_indices = np.array(days_of_year <= day_break)
+                online_test_indices = np.array((days_of_year > day_break) & (days_of_year < day_break + 14))
+                clf_online = sklearn.ensemble.GradientBoostingClassifier(
+                    n_estimators=int((day_break - days_of_year.min()) / 2.0),
+                    learning_rate=0.05, max_depth=4, verbose=False
+                )
+                clf_online.fit(this_year_preds.ix[online_train_indices,:], this_year_class.ix[online_train_indices])
+
+                confidence = float(day_break - days_of_year.min()) / (days_of_year.max() - days_of_year.min())
+
+                online_preds = clf_online.predict_proba(this_year_preds.ix[online_test_indices])[:,1]
+
+                predictions[online_test_indices] = (predictions[online_test_indices] * (1 - confidence)) + (online_preds * confidence)
+            except ValueError:
+                pass
 
         viz.roc(predictions, classes[~train_indices], block_show=False, ax=roc_ax)
         viz.precision_recall(predictions, classes[~train_indices], block_show=False, ax=pr_ax)
@@ -74,7 +95,7 @@ def prepare_data(df=None):
                  not elevated E. coli levels).
     '''
     if df is None:
-        df = rd.read_data()
+        df = rd.read_data(read_weather_station=False, read_water_sensor=False)
 
     # Leaving 2015 as the final validation set
     df = df[df['Full_date'] < '1-1-2015']
