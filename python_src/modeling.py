@@ -479,6 +479,7 @@ if __name__ == '__main__':
 
     roc_ax.get_figure().savefig(now + '--roc.png', format='png')
     pr_ax.get_figure().savefig(now + '--pr.png', format='png')
+    os.system('git diff modeling.py > ' + now + '--patch.diff')
 
 
     plt.show(block=True)
