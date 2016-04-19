@@ -50,14 +50,14 @@ def model(timestamps, predictors, classes,
     pr_ax  : the matplotlib axes object containing all of the PR curves.
     '''
     if classifier is None:
-        classifier = sklearn.ensemble.GradientBoostingClassifier
+        classifier = sklearn.ensemble.RandomForestClassifier
     if hyperparams is None:
         hyperparams = {}
 
-    timestamps = timestamps.map(lambda x: x.year)
+    years = timestamps.map(lambda x: x.year)
 
-    start = timestamps.min()
-    stop = timestamps.max()
+    start = years.min()
+    stop = years.max()
 
     stop = min(stop, 2014) # do not include 2015
 
@@ -71,9 +71,10 @@ def model(timestamps, predictors, classes,
     auc_rocs = []
 
     for yr in range(start, stop+1):
-        is_not_yr = timestamps != yr
-        train_indices = np.array(is_not_yr)
-        test_indices = np.array(~is_not_yr)
+        is_yr = years == yr
+        yrs_diff = np.abs(years - yr)
+        train_indices = np.array(~is_yr & (yrs_diff <= 100))
+        test_indices = np.array(is_yr)
 
         clf = classifier(**hyperparams)
         clf.fit(predictors.ix[train_indices,:], classes[train_indices])
@@ -186,11 +187,17 @@ def prepare_data(df=None):
         'pressure':[0],
         'cloudCover':[4],
         'humidity':[4],
-        'precipIntensity':[-19, -15, -12, -8, -4, 0,4]
+        'precipIntensity':[-19, -15, -12, -8, -4, 0, 4]
     }
     for var in deterministic_hourly_columns:
         for hr in deterministic_hourly_columns[var]:
             deterministic_columns.append(var + '_hour_' + str(hr))
+
+    # You can use these to remove columns where the trailing average is useful,
+    # but the individual values are not.
+    deterministic_hourly_columns_to_remove = {
+        'precipIntensity':[-19, -15, -12, -8, -4, 0, 4],
+    }
 
     # Historical columns have their previous days' values added to the predictors,
     # but not the current day's value(s) unless the historical column also exists
@@ -263,6 +270,7 @@ def prepare_data(df=None):
             continue
         df[cname] = df[[str(n) + '_day_prior_' + var for n in rnge]].mean(1)
         for n in rnge:
+            # TODO: mark rows that are being filled this way
             df[str(n) + '_day_prior_' + var].fillna(df[cname], inplace=True)
 
     # Do a similar process for the hourly data.
@@ -273,7 +281,11 @@ def prepare_data(df=None):
             continue
         df[cname] = df[[var + '_hour_' + str(n) for n in rnge]].mean(1)
         for n in rnge:
+            # TODO: mark rows that are being filled this way
             df[var + '_hour_' + str(n)].fillna(df[cname], inplace=True)
+        if var in deterministic_hourly_columns_to_remove:
+            for n in rnge:
+                df.drop(var + '_hour_' + str(n), axis=1, inplace=True)
 
 
     ######################################################
@@ -338,6 +350,7 @@ def prepare_data(df=None):
     for yr in years.unique():
         not_yr = np.array(years != yr)
         is_yr = np.array(years == yr)
+        # TODO: mark rows that are being filled this way
         df.ix[is_yr, cols] = df.ix[is_yr, cols].fillna(df.ix[not_yr, cols].mean())
 
 
