@@ -4,6 +4,8 @@ import visualizations as viz
 import matplotlib.pyplot as plt
 import argparse
 import pandas as pd
+import datetime as dt
+import os
 
 # sklearn imports, may need to add more to use different models
 import sklearn
@@ -164,7 +166,7 @@ def prepare_data(df=None):
 
         # 'sunriseTime',  # commenting for now since it is in absolute UNIX time
 
-        # 'Days.Since.Last.Holiday',
+        'Days.Since.Last.Holiday',
 
         'flag_geographically_a_north_beach',
         'categorical_beach_grouping'
@@ -178,13 +180,13 @@ def prepare_data(df=None):
     # [-16,-13,-12,-11,-9,-3,0] from MIDNIGHT the day of should be included as
     # variables in the model.
     deterministic_hourly_columns = {
-        'temperature':range(-19,5),
+        'temperature': list(range(-19,-5)) + list(range(0,5)),
         'windSpeed':[1,2,3,4],
         'windBearing':[4],
         'pressure':[0],
         'cloudCover':[4],
         'humidity':[4],
-        'precipIntensity':[0,4]
+        'precipIntensity':[-19, -15, -12, -8, -4, 0,4]
     }
     for var in deterministic_hourly_columns:
         for hr in deterministic_hourly_columns[var]:
@@ -201,10 +203,10 @@ def prepare_data(df=None):
     historical_columns = {
         'temperatureMin': range(1,3),
         'temperatureMax': range(1,4),
-        # 'humidity': range(1,3),
-        # 'windSpeed': range(1,8),
-        # 'cloudCover': range(1,8),
-        # 'precipIntensity': [1],
+        'humidity': range(1,3),
+        'windSpeed': range(1,8),
+        'cloudCover': range(1,8),
+        'precipIntensity': [1],
         'Escherichia.coli': range(1,8)
     }
     historical_columns_list = list(historical_columns.keys())
@@ -396,9 +398,9 @@ if __name__ == '__main__':
     # classifier as keyword arguments
     hyperparams = {
         ## Parameters that effect computation
-        'n_estimators':500,
+        'n_estimators':1000,
         'max_depth':5,
-        'class_weight':{0: 1.0, 1: 1/.15},
+        'class_weight':{0: 1.0, 1: 7.0},
         ## Misc parameters
         'n_jobs':-1,
         'verbose':False
@@ -471,4 +473,12 @@ if __name__ == '__main__':
 
     ## Update plots
     plt.draw()
+
+    # Save PNGs of figures, and this code
+    now = dt.datetime.now().isoformat().replace(':', '_').replace('.','_')
+
+    roc_ax.get_figure().savefig(now + '--roc.png', format='png')
+    pr_ax.get_figure().savefig(now + '--pr.png', format='png')
+
+
     plt.show(block=True)
