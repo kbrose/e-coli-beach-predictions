@@ -218,6 +218,10 @@ def prepare_data(df=None):
     }
     historical_columns_list = list(historical_columns.keys())
 
+    historical_columns_to_remove = {
+        'windSpeed': range(1,8),
+    }
+
     # Specific geo group average columns will have their means calculated
     # for each of the 6 geographic groups, and these values will be used as
     # predictors everywhere.
@@ -272,6 +276,9 @@ def prepare_data(df=None):
         for n in rnge:
             # TODO: mark rows that are being filled this way
             df[str(n) + '_day_prior_' + var].fillna(df[cname], inplace=True)
+        if var in historical_columns_to_remove:
+            for n in historical_columns_to_remove[var]:
+                df.drop(str(n) + '_day_prior_' + var, axis=1, inplace=True)
 
     # Do a similar process for the hourly data.
     for var in deterministic_hourly_columns:
@@ -284,7 +291,7 @@ def prepare_data(df=None):
             # TODO: mark rows that are being filled this way
             df[var + '_hour_' + str(n)].fillna(df[cname], inplace=True)
         if var in deterministic_hourly_columns_to_remove:
-            for n in rnge:
+            for n in deterministic_hourly_columns_to_remove[var]:
                 df.drop(var + '_hour_' + str(n), axis=1, inplace=True)
 
 
