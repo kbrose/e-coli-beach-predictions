@@ -157,6 +157,8 @@ def prepare_data(df=None):
     deterministic_columns = [
         # 'Client.ID',  # subsumed by the geographic flags
 
+        # 'Sample.Collection.Time',
+
         'precipIntensity',
         'precipIntensityMax',
         'temperatureMin',
@@ -298,6 +300,32 @@ def prepare_data(df=None):
                 # df['isnull_trailing_mean_filled_' + col] = df[col].isnull()
                 df[col].fillna(df[cname], inplace=True)
 
+
+    ######################################################
+    #### Sample Collection Times
+    ######################################################
+    def clean_times(s):
+        '''
+        Takes in a string from the sample collection column and
+        makes it machine readable if possible, and a NaN otherwise
+        '''
+        if type(s) is not str:
+            if type(s) is dt.datetime or type(s) is dt.time:
+                return dt.datetime(2016, 1, 1, hour=s.hour, minute=s.minute)
+
+        try:
+            if ':' not in s:
+                return float('nan')
+            i = s.index(':')
+            hr = int(s[max(i - 2, 0):i])
+            mn = int(s[i+1:i+3])
+
+            return float(hr) + float(mn) / 60.0
+        except:
+            return float('nan')
+
+    if 'Sample.Collection.Time' in df.columns:
+        df['Sample.Collection.Time'] = df['Sample.Collection.Time'].map(lambda x: clean_times(x))
 
 
     ######################################################
