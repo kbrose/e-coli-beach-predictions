@@ -274,11 +274,13 @@ def prepare_data(df=None):
             continue
         df[cname] = df[[str(n) + '_day_prior_' + var for n in rnge]].mean(1)
         for n in rnge:
-            # TODO: mark rows that are being filled this way
-            df[str(n) + '_day_prior_' + var].fillna(df[cname], inplace=True)
-        if var in historical_columns_to_remove:
-            for n in historical_columns_to_remove[var]:
-                df.drop(str(n) + '_day_prior_' + var, axis=1, inplace=True)
+            col = str(n) + '_day_prior_' + var
+            if var in historical_columns_to_remove and n in historical_columns_to_remove[var]:
+                df.drop(col, axis=1, inplace=True)
+                continue
+            if df[col].isnull().any():
+                # df['isnull_trailing_mean_filled_' + col] = df[col].isnull()
+                df[col].fillna(df[cname], inplace=True)
 
     # Do a similar process for the hourly data.
     for var in deterministic_hourly_columns:
@@ -288,11 +290,14 @@ def prepare_data(df=None):
             continue
         df[cname] = df[[var + '_hour_' + str(n) for n in rnge]].mean(1)
         for n in rnge:
-            # TODO: mark rows that are being filled this way
-            df[var + '_hour_' + str(n)].fillna(df[cname], inplace=True)
-        if var in deterministic_hourly_columns_to_remove:
-            for n in deterministic_hourly_columns_to_remove[var]:
-                df.drop(var + '_hour_' + str(n), axis=1, inplace=True)
+            col = var + '_hour_' + str(n)
+            if var in deterministic_hourly_columns_to_remove and n in deterministic_hourly_columns_to_remove[var]:
+                df.drop(col, axis=1, inplace=True)
+                continue
+            if df[col].isnull().any():
+                # df['isnull_trailing_mean_filled_' + col] = df[col].isnull()
+                df[col].fillna(df[cname], inplace=True)
+
 
 
     ######################################################
@@ -357,7 +362,9 @@ def prepare_data(df=None):
     for yr in years.unique():
         not_yr = np.array(years != yr)
         is_yr = np.array(years == yr)
-        # TODO: mark rows that are being filled this way
+        for col in cols:
+            if df.ix[is_yr, col].isnull().sum() > df.shape[0] * 0.1:
+                df.ix[is_yr, 'isnull_mean_filled_' + col] = df.ix[is_yr, col].isnull()
         df.ix[is_yr, cols] = df.ix[is_yr, cols].fillna(df.ix[not_yr, cols].mean())
 
 
@@ -421,6 +428,7 @@ if __name__ == '__main__':
         'n_estimators':1000,
         'max_depth':5,
         'class_weight':{0: 1.0, 1: 7.0},
+        'criterion':'gini',
         ## Misc parameters
         'n_jobs':-1,
         'verbose':False
