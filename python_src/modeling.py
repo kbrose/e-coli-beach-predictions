@@ -73,7 +73,7 @@ def model(timestamps, predictors, classes,
     for yr in range(start, stop+1):
         is_yr = years == yr
         yrs_diff = np.abs(years - yr)
-        train_indices = np.array(~is_yr & (yrs_diff <= 100))
+        train_indices = np.array(~is_yr & (yrs_diff <= 3))
         test_indices = np.array(is_yr)
 
         clf = classifier(**hyperparams)
@@ -456,7 +456,7 @@ if __name__ == '__main__':
         'n_estimators':1000,
         'max_depth':5,
         'class_weight':{0: 1.0, 1: 7.0},
-        'criterion':'gini',
+        'criterion':'entropy',
         ## Misc parameters
         'n_jobs':-1,
         'verbose':False
@@ -466,6 +466,7 @@ if __name__ == '__main__':
                                           classifier=sklearn.ensemble.RandomForestClassifier,
                                           hyperparams=hyperparams,
                                           roc_bounds=partial_auc_bounds,
+                                          prediction_attribute='predict_proba',
                                           verbose=args.verbose)
 
     # Plotting
