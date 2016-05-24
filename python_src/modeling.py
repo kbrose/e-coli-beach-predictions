@@ -353,6 +353,57 @@ def prepare_data(df=None):
         grp_df.columns = ['_'.join([str(x) for x in col]) for col in grp_df.columns.values]
 
         df = df.merge(grp_df, how='left', left_on='Full_date', right_index=True)
+    
+    
+    ######################################################
+    #### PCA + Filters
+    ######################################################
+
+    forecast = pd.read_csv('../data/ExternalData/forecastio_hourly_weather.csv')
+    cpd_data_path = '../data/ChicagoParkDistrict/raw/Standard 18 hr Testing/'
+    cleanbeachnamesdf = pd.read_csv(cpd_data_path + 'cleanbeachnames.csv')
+    beach_names_new_to_short = dict(zip(cleanbeachnamesdf['New'],
+                                                cleanbeachnamesdf['Short_Names']))
+    forecast['beach'] = forecast['beach'].map(lambda x: beach_names_new_to_short[x])
+    forecast['windX'] = np.cos(forecast['windBearing'] * 180 / np.pi) * forecast['windSpeed']
+    forecast['windY'] = np.sin(forecast['windBearing'] * 180 / np.pi) * forecast['windSpeed']
+    forecast.drop(['summary', 'icon', 'windBearing', 'windSpeed', 'precipType'],
+                  axis=1, inplace=True)
+    forecast['time'] = pd.to_datetime(forecast['time'])
+    forecast.sort_values('time', inplace=True)
+    
+    orig_cols = forecast.columns
+    
+    forecast_pivot = rd.process_hourly_data(forecast, beach_col_name='beach',
+                                            timestamp_col_name='time', hours_offset=-15)
+    forecast_pivot2 = rd.process_hourly_data(forecast, beach_col_name='beach',
+                                             timestamp_col_name='time', hours_offset=-24)
+    forecast_pivot2.drop([c for c in forecast_pivot2.columns if (c[-3] == '-' and int(c[-3:]) > -16)],
+                          axis=1, inplace=True)
+    forecast_pivot = pd.merge(forecast_pivot, forecast_pivot2)
+    
+    for days_offset in range(-10,-1):
+        hours_offset = days_offset * 24
+        
+        forecast_pivot2 = rd.process_hourly_data(forecast, beach_col_name='beach',
+                                                 timestamp_col_name='time',
+                                                 hours_offset=hours_offset)
+                                                 
+        to_drop = [c for c in forecast_pivot2.columns if str(hours_offset) not in c]
+        to_drop.remove('time')
+        to_drop.remove('beach')
+        
+        forecast_pivot2.drop(to_drop, axis=1, inplace=True)
+                              
+        forecast_pivot = pd.merge(forecast_pivot, forecast_pivot2)
+    
+    df_cols = ['Escherichia.coli'] + \
+        [str(n) + '_day_prior_Escherichia.coli' for n in historical_columns['Escherichia.coli']]
+    forecast_pivot = pd.merge(forecast_pivot,
+                              df[df_cols],
+                              left_on=['time','beach'], right_on=['Full_date', 'Client.ID'])
+    
+    pca_filts = pca_filters(forecast_pivot, 235, orig_cols)
 
 
     ######################################################
@@ -419,18 +470,19 @@ def prepare_data(df=None):
     # We should drop these rows b/c there is nothing for us to predict.
     df.dropna(axis=0, inplace=True)
     
-    # predictors = pca_filters(df)
-
     predictors = df.drop(meta_columns, axis=1)
     meta_info = df[meta_columns]
 
     return predictors, meta_info
 
 
-def pca_filters(df, T,
-                time_col='Full_date',
-                beach_col='Client.ID',
-                ecoli_col='Escherichia.coli'):
+def pca_filters(df, T, original_cols,
+                time_col='time',
+                beach_col='beach',
+                ecoli_col='ecoli'):
+                    
+    ### Compute PCA transforms
+                    
     pcas = {}
     df_pcas = pd.DataFrame(index=df[time_col].unique())
     
@@ -452,6 +504,8 @@ def pca_filters(df, T,
         # Merge in the new columns to the DataFrame of PCA components
         df_pcas = df_pcas.merge(pca_df, left_index=True, right_index=True, how='outer')
         pcas[c] = pca
+    
+    ### Compute difference in mean values, and ranksum p-values from hi vs. lo Ecoli    
     
     # pos_means is a dictionary keyed on beach names. Each value is itself a
     # dictionary keyed on the column names. These values indicate the mean
@@ -487,6 +541,33 @@ def pca_filters(df, T,
             neg_means[b][c] = below_thresh[c].mean()
             
             rs_pvalues[b][c] = scipy.stats.ranksums(above_thresh[c], below_thresh[c]).pvalue
+    
+    
+    ### Create actual predictor values
+    
+    preds = df[[beach_col, time_col]]
+    
+    for b in preds[beach_col].unique():
+        beach_index = preds.index(preds[beach_col] == b)
+        beach_times = preds.loc[preds[beach_col] == b, time_col]
+        
+        for orig_c in original_cols:
+            if orig_c in [time_col, beach_col, ecoli_col]:
+                continue
+            preds[orig_c + '_pca_component_0'] = 0
+            preds[orig_c + '_pca_component_1'] = 0
+            preds[orig_c + '_pca_component_A'] = 0
+            
+            for c in df_pcas.columns:
+                # pivoted columns in the input df are named as a super-string
+                # of the non-pivoted versions.
+                if not orig_c in c:
+                    continue
+                comp = '_pca_component_0'
+                score = df_pcas.loc[beach_times, c + comp] - neg_means[b][c + comp]
+                score = score * (pos_means[b][c + comp]-neg_means[b][c + comp])
+                score = score * ((1 - rs_pvalues[b][c + comp])**100)
+                preds.loc[beach_index[score.notnull()], c + comp] += score[score.notnull()].values
         
     return pcas, df_pcas, pos_means, neg_means, rs_pvalues
 
