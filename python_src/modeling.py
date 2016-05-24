@@ -17,7 +17,7 @@ import sklearn.decomposition
 import scipy.stats
 
 
-def model(timestamps, predictors, classes,
+def model(df,
           classifier=None,
           prediction_attribute='predict_proba',
           hyperparams=None,
@@ -30,13 +30,7 @@ def model(timestamps, predictors, classes,
 
     Parameters
     ----------
-    timestamps : Nx1 pandas series of timestamps.
-                 Each element should have a "year" attribute.
-    predictors : NxM pandas DataFrame, all values should be numeric,
-                 and there should be no NaN values.
-    classes    : Nx1 array like of binary outcomes, e.g. True or False.
-    classifier : sklearn classifier, should have the attributes "fit"
-                 and "predict_proba" at the least.
+    df         : TODO
     hyperparams: Dictionary of hyper parameters to pass to the
                  classifier method.
     prediction_attribute:
@@ -58,12 +52,8 @@ def model(timestamps, predictors, classes,
     if hyperparams is None:
         hyperparams = {}
 
-    years = timestamps.map(lambda x: x.year)
-
-    start = years.min()
-    stop = years.max()
-
-    stop = min(stop, 2014) # do not include 2015
+    start = 2006
+    stop = 2015
 
     roc_fig, roc_ax = plt.subplots(1, figsize=[12, 9])
     pr_fig, pr_ax = plt.subplots(1, figsize=[12, 9])
@@ -75,9 +65,14 @@ def model(timestamps, predictors, classes,
     auc_rocs = []
 
     for yr in range(start, stop+1):
+        predictors, meta_info = prepare_data(df)
+        timestamps = meta_info['Full_date']
+        classes = meta_info['Escherichia.coli'] > 235
+
+        years = timestamps.map(lambda x: x.year)
         is_yr = years == yr
         yrs_diff = np.abs(years - yr)
-        train_indices = np.array(~is_yr & (yrs_diff <= 3))
+        train_indices = np.array(~is_yr)
         test_indices = np.array(is_yr)
 
         clf = classifier(**hyperparams)
@@ -117,14 +112,18 @@ def model(timestamps, predictors, classes,
     return clfs, auc_rocs, roc_ax, pr_ax
 
 
-def prepare_data(df=None):
+def prepare_data(df=None, leaveout=None):
     '''
     Preps the data to be used in the model. Right now, the code itself must
     be modified to tweak which columns are included in what way.
 
     Parameters
     ----------
-    df : Dataframe to use. If not specified, the dataframe is loaded automatically.
+    df       : Dataframe to use. If not specified, the dataframe is
+               loaded automatically.
+    leaveout : If not None, then this is an integer specifying which
+               year should be left out. Used for preparations that
+               use information across all years.
 
     Returns
     -------
@@ -137,9 +136,6 @@ def prepare_data(df=None):
     '''
     if df is None:
         df = rd.read_data()
-
-    # Leaving 2015 as the final validation set
-    df = df[df['Full_date'] < '1-1-2015']
 
 
     ######################################################
@@ -404,10 +400,17 @@ def prepare_data(df=None):
                               left_on=['time','beach'], right_on=['Full_date', 'Client.ID'])
     forecast_pivot.drop(['Full_date', 'Client.ID'], axis=1, inplace=True)
 
-    pca_filts = pca_filters(forecast_pivot, 235, orig_cols + ['Escherichia.coli'])
+    if leaveout is None:
+        pcas, pos_means, neg_means, rs_pvalues = train_pca_filters(forecast_pivot, 235)
+    else:
+        not_yr = np.array(~(forecast_pivot['Full_date'].map(lambda x: x.year) == leaveout))
+        pcas, pos_means, neg_means, rs_pvalues = train_pca_filters(forecast_pivot.ix[not_yr, :], 235)
+
+    pca_filts = compute_pca_filters(forecast_pivot, 235, orig_cols + ['Escherichia.coli'],
+                                    pcas, pos_means, neg_means, rs_pvalues)
     pca_filts.rename(columns={'beach':'Client.ID', 'time':'Full_date'}, inplace=True)
 
-    df = pd.merge(df, pca_filts, how='outer', on=['Full_date', 'Client.ID'])
+    df = pd.merge(df[meta_columns], pca_filts, how='outer', on=['Full_date', 'Client.ID'])
 
     ######################################################
     #### Process non-numeric columns
@@ -479,11 +482,13 @@ def prepare_data(df=None):
     return predictors, meta_info
 
 
-def pca_filters(df, T, original_cols,
-                time_col='time',
-                beach_col='beach',
-                ecoli_col='Escherichia.coli'):
-
+def train_pca_filters(df, T,
+                      time_col='time',
+                      beach_col='beach',
+                      ecoli_col='Escherichia.coli'):
+    '''
+    Trains the PCA/filter creation
+    '''
     ### Compute PCA transforms
 
     pcas = {}
@@ -550,7 +555,42 @@ def pca_filters(df, T, original_cols,
 
             rs_pvalues[b][c] = scipy.stats.ranksums(above_thresh[c], below_thresh[c]).pvalue
 
-    ### Create actual predictor values
+    return pcas, pos_means, neg_means, rs_pvalues
+
+
+def compute_pca_filters(df, T, original_cols, pcas, pos_means, neg_means, rs_pvalues,
+                        time_col='time',
+                        beach_col='beach',
+                        ecoli_col='Escherichia.coli'):
+    '''
+    Computes the PCA/filter scores.
+    '''
+    ### Compute PCA transforms
+
+    df_pcas = pd.DataFrame(index=df[time_col].unique())
+
+    for c in df.columns:
+        if c in [time_col, beach_col, ecoli_col]:
+            continue
+        # pivot the dataframe so that each row is a day
+        pivoted = df.pivot(index=time_col, columns=beach_col, values=c)
+
+        # 39th street has all NaN's until 2009, just drop it
+        pivoted.drop('39th', axis=1, inplace=True)
+
+        # remove any rows that have a NaN
+        pivoted=pivoted[pivoted.notnull().all(axis=1)]
+
+        # Compute the PCA, take first 6 components
+        pca = pcas[c]
+        pca_df = pd.DataFrame(pca.transform(pivoted),
+                              index=pivoted.index,
+                              columns=[c + '_pca_component_' + n for n in '012345'])
+
+        # Merge in the new columns to the DataFrame of PCA components
+        df_pcas = df_pcas.merge(pca_df, left_index=True, right_index=True, how='outer')
+
+    ### Create predictor values
 
     preds = df[[beach_col, time_col]]
 
@@ -563,7 +603,6 @@ def pca_filters(df, T, original_cols,
         preds[orig_c + '_pca_component_A'] = 0
 
     for b in preds[beach_col].unique():
-        print(b)
         beach_index = preds.index[preds[beach_col] == b]
         beach_times = preds.loc[preds[beach_col] == b, time_col]
 
@@ -634,29 +673,19 @@ if __name__ == '__main__':
     # Extract the EPA (technically USGS) model performance from the data
     epa_model_df = df[['Drek_Prediction', 'Escherichia.coli']].dropna()
 
-    # Prepare the data
-    predictors, meta_info = prepare_data(df)
-    timestamps = meta_info['Full_date']
-    classes = meta_info['Escherichia.coli'] > 235
-
-    print('Using the following columns as predictors:')
-    for c in predictors.columns:
-        print('\t' + str(c))
-
     # Set up model parameters, these will be passed to the
     # classifier as keyword arguments
     hyperparams = {
         ## Parameters that effect computation
         'n_estimators':1000,
-        'max_depth':5,
-        'class_weight':{0: 1.0, 1: 7.0},
+        'class_weight':{0: 1.0, 1: 4.0},
         'criterion':'entropy',
         ## Misc parameters
         'n_jobs':-1,
         'verbose':False
     }
     partial_auc_bounds = [0.005, 0.05]
-    clfs, auc_rocs, roc_ax, pr_ax = model(timestamps, predictors, classes,
+    clfs, auc_rocs, roc_ax, pr_ax = model(df,
                                           classifier=sklearn.ensemble.RandomForestClassifier,
                                           hyperparams=hyperparams,
                                           roc_bounds=partial_auc_bounds,
