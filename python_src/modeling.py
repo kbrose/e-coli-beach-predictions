@@ -427,12 +427,15 @@ def prepare_data(df=None):
     return predictors, meta_info
 
 
-def pca_filters(df, T):
+def pca_filters(df, T,
+                time_col='Full_date',
+                beach_col='Client.ID',
+                ecoli_col='Escherichia.coli'):
     pcas = {}
-    df_pcas = pd.DataFrame(index=df['Full_date'].unique())
+    df_pcas = pd.DataFrame(index=df[time_col].unique())
     
     for c in df.columns:
-        if c in ['Full_date', 'Client.ID']:
+        if c in [time_col, beach_col, ecoli_col]:
             continue
         # pivot the dataframe so that each row is a day
         pivoted = df.pivot(index='Full_date', columns='Client.ID', values=c)
@@ -447,10 +450,45 @@ def pca_filters(df, T):
                               columns=[c + '_pca_component_' + n for n in '012345'])
                               
         # Merge in the new columns to the DataFrame of PCA components
-        df_pcas=df_pcas.merge(pca_df,left_index=True,right_index=True,how='outer')
+        df_pcas = df_pcas.merge(pca_df, left_index=True, right_index=True, how='outer')
         pcas[c] = pca
+    
+    # pos_means is a dictionary keyed on beach names. Each value is itself a
+    # dictionary keyed on the column names. These values indicate the mean
+    # value of that column when E coli is elevated. Similarly for neg_means
+    pos_means = {}
+    neg_means = {}
+    
+    # rs_pvalues is a dictionary keyed in the same way as above. It's values
+    # are the p-values resulting from rank-sum tests of differences between
+    # values from high vs. low E. coli
+    rs_pvalues = {}
+    
+    for b in df[beach_col].unique():
+        pos_means[b] = {}
+        neg_means[b] = {}
+        rs_pvalues[b] = {}
         
-    return pcas, df_pcas
+        # subset on the beach
+        beach_df = df[df[beach_col] == b]
+        
+        beach_df.set_index(time_col, inplace=True)
+        
+        beach_df = beach_df.merge(df_pcas, left_index=True, right_index=True, how='outer')
+        
+        above_thresh = beach_df[beach_df[ecoli_col] >= T]
+        below_thresh = beach_df[beach_df[ecoli_col] < T]
+        
+        for c in df_pcas.columns:
+            if c in [time_col, beach_col, ecoli_col]:
+                continue
+            
+            pos_means[b][c] = above_thresh[c].mean()
+            neg_means[b][c] = below_thresh[c].mean()
+            
+            rs_pvalues[b][c] = scipy.stats.ranksums(above_thresh[c], below_thresh[c]).pvalue
+        
+    return pcas, df_pcas, pos_means, neg_means, rs_pvalues
 
 
 if __name__ == '__main__':
