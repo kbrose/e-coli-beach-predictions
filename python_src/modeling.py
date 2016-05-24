@@ -371,9 +371,9 @@ def prepare_data(df=None):
                   axis=1, inplace=True)
     forecast['time'] = pd.to_datetime(forecast['time'])
     forecast.sort_values('time', inplace=True)
-    
-    orig_cols = forecast.columns
-    
+
+    orig_cols = forecast.columns.tolist()
+
     forecast_pivot = rd.process_hourly_data(forecast, beach_col_name='beach',
                                             timestamp_col_name='time', hours_offset=-15)
     forecast_pivot2 = rd.process_hourly_data(forecast, beach_col_name='beach',
@@ -381,31 +381,33 @@ def prepare_data(df=None):
     forecast_pivot2.drop([c for c in forecast_pivot2.columns if (c[-3] == '-' and int(c[-3:]) > -16)],
                           axis=1, inplace=True)
     forecast_pivot = pd.merge(forecast_pivot, forecast_pivot2)
-    
+
     for days_offset in range(-10,-1):
         hours_offset = days_offset * 24
-        
+
         forecast_pivot2 = rd.process_hourly_data(forecast, beach_col_name='beach',
                                                  timestamp_col_name='time',
                                                  hours_offset=hours_offset)
-                                                 
+
         to_drop = [c for c in forecast_pivot2.columns if str(hours_offset) not in c]
         to_drop.remove('time')
         to_drop.remove('beach')
-        
+
         forecast_pivot2.drop(to_drop, axis=1, inplace=True)
-                              
+
         forecast_pivot = pd.merge(forecast_pivot, forecast_pivot2)
-    
+
     df_cols = ['Escherichia.coli'] + \
         [str(n) + '_day_prior_Escherichia.coli' for n in historical_columns['Escherichia.coli']]
     forecast_pivot = pd.merge(forecast_pivot,
                               df[df_cols + ['Full_date', 'Client.ID']],
                               left_on=['time','beach'], right_on=['Full_date', 'Client.ID'])
     forecast_pivot.drop(['Full_date', 'Client.ID'], axis=1, inplace=True)
-    
-    pca_filts = pca_filters(forecast_pivot, 235, orig_cols)
 
+    pca_filts = pca_filters(forecast_pivot, 235, orig_cols + ['Escherichia.coli'])
+    pca_filts.rename(columns={'beach':'Client.ID', 'time':'Full_date'}, inplace=True)
+
+    df = pd.merge(df, pca_filts, how='outer', on=['Full_date', 'Client.ID'])
 
     ######################################################
     #### Process non-numeric columns
@@ -470,7 +472,7 @@ def prepare_data(df=None):
     # Any rows that still have NaNs are NaN b/c there is no E. coli reading
     # We should drop these rows b/c there is nothing for us to predict.
     df.dropna(axis=0, inplace=True)
-    
+
     predictors = df.drop(meta_columns, axis=1)
     meta_info = df[meta_columns]
 
@@ -481,105 +483,135 @@ def pca_filters(df, T, original_cols,
                 time_col='time',
                 beach_col='beach',
                 ecoli_col='Escherichia.coli'):
-                    
+
     ### Compute PCA transforms
-                    
+
     pcas = {}
     df_pcas = pd.DataFrame(index=df[time_col].unique())
-    
+
     for c in df.columns:
         if c in [time_col, beach_col, ecoli_col]:
             continue
         # pivot the dataframe so that each row is a day
         pivoted = df.pivot(index=time_col, columns=beach_col, values=c)
-        
+
+        # 39th street has all NaN's until 2009, just drop it
+        pivoted.drop('39th', axis=1, inplace=True)
+
         # remove any rows that have a NaN
         pivoted=pivoted[pivoted.notnull().all(axis=1)]
-        
+
         # Compute the PCA, take first 6 components
         pca = sklearn.decomposition.PCA(n_components=6)
         pca_df = pd.DataFrame(pca.fit_transform(pivoted),
                               index=pivoted.index,
                               columns=[c + '_pca_component_' + n for n in '012345'])
-                              
+
         # Merge in the new columns to the DataFrame of PCA components
         df_pcas = df_pcas.merge(pca_df, left_index=True, right_index=True, how='outer')
         pcas[c] = pca
-    
-    ### Compute difference in mean values, and ranksum p-values from hi vs. lo Ecoli    
-    
+
+    ### Compute difference in mean values, and ranksum p-values from hi vs. lo Ecoli
+
     # pos_means is a dictionary keyed on beach names. Each value is itself a
     # dictionary keyed on the column names. These values indicate the mean
     # value of that column when E coli is elevated. Similarly for neg_means
     pos_means = {}
     neg_means = {}
-    
+
     # rs_pvalues is a dictionary keyed in the same way as above. It's values
     # are the p-values resulting from rank-sum tests of differences between
     # values from high vs. low E. coli
     rs_pvalues = {}
-    
+
     for b in df[beach_col].unique():
-        pos_means[b] = {}
-        neg_means[b] = {}
         rs_pvalues[b] = {}
-        
+
         # subset on the beach
         beach_df = df[df[beach_col] == b]
-        
+
         beach_df.set_index(time_col, inplace=True)
-        
+
         beach_df = beach_df.merge(df_pcas, left_index=True, right_index=True, how='outer')
-        
+
+        # get the subset that are above and below threshold
+        # note that htese are not necessarily complements of each other
+        # due to the behavior of NaN and comparisons
         above_thresh = beach_df[beach_df[ecoli_col] >= T]
         below_thresh = beach_df[beach_df[ecoli_col] < T]
-        
+
+        # get the mean values of the variables conditionalized on above/below
+        pos_means[b] = above_thresh.mean()
+        neg_means[b] = below_thresh.mean()
+
         for c in df_pcas.columns:
             if c in [time_col, beach_col, ecoli_col]:
                 continue
-            
-            pos_means[b][c] = above_thresh[c].mean()
-            neg_means[b][c] = below_thresh[c].mean()
-            
+
             rs_pvalues[b][c] = scipy.stats.ranksums(above_thresh[c], below_thresh[c]).pvalue
-    
-    
+
     ### Create actual predictor values
-    
+
     preds = df[[beach_col, time_col]]
-    
+
+    # Initialize the columns to zero
+    for orig_c in original_cols:
+        if orig_c in [time_col, beach_col]:
+            continue
+        preds[orig_c + '_pca_component_0'] = 0
+        preds[orig_c + '_pca_component_1'] = 0
+        preds[orig_c + '_pca_component_A'] = 0
+
     for b in preds[beach_col].unique():
         print(b)
         beach_index = preds.index[preds[beach_col] == b]
         beach_times = preds.loc[preds[beach_col] == b, time_col]
-        
+
+        neg = pd.DataFrame(neg_means[b]).transpose()
+        neg = pd.DataFrame(np.tile(neg, (len(beach_times), 1)), columns=neg.columns)
+
+        pos = pd.DataFrame(pos_means[b]).transpose()
+        pos = pd.DataFrame(np.tile(pos, (len(beach_times), 1)), columns=pos.columns)
+
+        rsp = pd.DataFrame(rs_pvalues[b], index=[0])
+        rsp = pd.DataFrame(np.tile(rsp, (len(beach_times), 1)), columns=rsp.columns)
+
         for orig_c in original_cols:
-            print('\t' + orig_c)
-            if orig_c in [time_col, beach_col, ecoli_col]:
+            if orig_c in [time_col, beach_col]:
                 continue
-            preds[orig_c + '_pca_component_0'] = 0
-            preds[orig_c + '_pca_component_1'] = 0
-            preds[orig_c + '_pca_component_A'] = 0
-            
-            for c in df_pcas.columns:
-                # pivoted columns in the input df are named as a super-string
-                # of the non-pivoted versions.
-                if not orig_c in c:
-                    continue
-                
-                score = df_pcas.loc[beach_times, c] - neg_means[b][c]
-                score = score * (pos_means[b][c] - neg_means[b][c])
-                score = score * ((1 - rs_pvalues[b][c])**100)
-                
-                comp = c[-16:]
-                if comp == '_pca_component_0':
-                    preds.loc[beach_index[score.notnull()], orig_c + comp] += score[score.notnull()].values
-                elif comp == '_pca_component_1':
-                    preds.loc[beach_index[score.notnull()], orig_c + comp] += score[score.notnull()].values
-                elif comp in ['_pca_component_' + n for n in '2345']:
-                    preds.loc[beach_index[score.notnull()], orig_c + comp[:-1] + 'A'] += \
-                        score[score.notnull()].values
-        
+
+            all_cols = [c for c in df_pcas.columns if orig_c in c]
+
+            # First component
+            comp_0_cols = [c for c in all_cols if '_pca_component_0' in c]
+
+            score = df_pcas.loc[beach_times, comp_0_cols] - neg[comp_0_cols].values
+            score = score * (pos[comp_0_cols].values - neg[comp_0_cols].values)
+            score = score * ((1 - rsp[comp_0_cols].values) ** 100)
+            score = score.sum(axis=1)
+
+            preds.loc[beach_index, orig_c + '_pca_component_0'] = score.values
+
+            # Second component
+            comp_1_cols = [c for c in all_cols if '_pca_component_1' in c]
+
+            score = df_pcas.loc[beach_times, comp_1_cols] - neg[comp_1_cols].values
+            score = score * (pos[comp_1_cols].values - neg[comp_1_cols].values)
+            score = score * ((1 - rsp[comp_1_cols].values) ** 100)
+            score = score.sum(axis=1)
+
+            preds.loc[beach_index, orig_c + '_pca_component_1'] = score.values
+
+            # Combine the rest of the components
+            comp_A_cols = [c for c in all_cols if any(['_pca_component_' + n in c for n in '2345'])]
+
+            score = df_pcas.loc[beach_times, comp_A_cols] - neg[comp_A_cols].values
+            score = score * (pos[comp_A_cols].values - neg[comp_A_cols].values)
+            score = score * ((1 - rsp[comp_A_cols].values) ** 100)
+            score = score.sum(axis=1)
+
+            preds.loc[beach_index, orig_c + '_pca_component_A'] = score.values
+
     return preds
 
 
