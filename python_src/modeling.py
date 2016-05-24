@@ -11,6 +11,10 @@ import os
 import sklearn
 import sklearn.ensemble
 import sklearn.linear_model
+import sklearn.decomposition
+
+# Used for filtering
+import scipy.stats
 
 
 def model(timestamps, predictors, classes,
@@ -414,11 +418,39 @@ def prepare_data(df=None):
     # Any rows that still have NaNs are NaN b/c there is no E. coli reading
     # We should drop these rows b/c there is nothing for us to predict.
     df.dropna(axis=0, inplace=True)
+    
+    # predictors = pca_filters(df)
 
     predictors = df.drop(meta_columns, axis=1)
     meta_info = df[meta_columns]
 
     return predictors, meta_info
+
+
+def pca_filters(df, T):
+    pcas = {}
+    df_pcas = pd.DataFrame(index=df['Full_date'].unique())
+    
+    for c in df.columns:
+        if c in ['Full_date', 'Client.ID']:
+            continue
+        # pivot the dataframe so that each row is a day
+        pivoted = df.pivot(index='Full_date', columns='Client.ID', values=c)
+        
+        # remove any rows that have a NaN
+        pivoted=pivoted[pivoted.notnull().all(axis=1)]
+        
+        # Compute the PCA, take first 6 components
+        pca = sklearn.decomposition.PCA(n_components=6)
+        pca_df = pd.DataFrame(pca.fit_transform(pivoted),
+                              index=pivoted.index,
+                              columns=[c + '_pca_component_' + n for n in '012345'])
+                              
+        # Merge in the new columns to the DataFrame of PCA components
+        df_pcas=df_pcas.merge(pca_df,left_index=True,right_index=True,how='outer')
+        pcas[c] = pca
+        
+    return pcas, df_pcas
 
 
 if __name__ == '__main__':
