@@ -354,7 +354,6 @@ def prepare_data(df=None):
 
         df = df.merge(grp_df, how='left', left_on='Full_date', right_index=True)
     
-    
     ######################################################
     #### PCA + Filters
     ######################################################
@@ -400,8 +399,9 @@ def prepare_data(df=None):
     df_cols = ['Escherichia.coli'] + \
         [str(n) + '_day_prior_Escherichia.coli' for n in historical_columns['Escherichia.coli']]
     forecast_pivot = pd.merge(forecast_pivot,
-                              df[df_cols],
+                              df[df_cols + ['Full_date', 'Client.ID']],
                               left_on=['time','beach'], right_on=['Full_date', 'Client.ID'])
+    forecast_pivot.drop(['Full_date', 'Client.ID'], axis=1, inplace=True)
     
     pca_filts = pca_filters(forecast_pivot, 235, orig_cols)
 
@@ -479,7 +479,7 @@ def prepare_data(df=None):
 def pca_filters(df, T, original_cols,
                 time_col='time',
                 beach_col='beach',
-                ecoli_col='ecoli'):
+                ecoli_col='Escherichia.coli'):
                     
     ### Compute PCA transforms
                     
@@ -490,7 +490,7 @@ def pca_filters(df, T, original_cols,
         if c in [time_col, beach_col, ecoli_col]:
             continue
         # pivot the dataframe so that each row is a day
-        pivoted = df.pivot(index='Full_date', columns='Client.ID', values=c)
+        pivoted = df.pivot(index=time_col, columns=beach_col, values=c)
         
         # remove any rows that have a NaN
         pivoted=pivoted[pivoted.notnull().all(axis=1)]
@@ -548,7 +548,7 @@ def pca_filters(df, T, original_cols,
     preds = df[[beach_col, time_col]]
     
     for b in preds[beach_col].unique():
-        beach_index = preds.index(preds[beach_col] == b)
+        beach_index = preds.index[preds[beach_col] == b]
         beach_times = preds.loc[preds[beach_col] == b, time_col]
         
         for orig_c in original_cols:
@@ -563,13 +563,21 @@ def pca_filters(df, T, original_cols,
                 # of the non-pivoted versions.
                 if not orig_c in c:
                     continue
-                comp = '_pca_component_0'
-                score = df_pcas.loc[beach_times, c + comp] - neg_means[b][c + comp]
-                score = score * (pos_means[b][c + comp]-neg_means[b][c + comp])
-                score = score * ((1 - rs_pvalues[b][c + comp])**100)
-                preds.loc[beach_index[score.notnull()], c + comp] += score[score.notnull()].values
+                
+                score = df_pcas.loc[beach_times, c] - neg_means[b][c]
+                score = score * (pos_means[b][c] - neg_means[b][c])
+                score = score * ((1 - rs_pvalues[b][c])**100)
+                
+                comp = c[-16:]
+                if comp == '_pca_component_0':
+                    preds.loc[beach_index[score.notnull()], orig_c + comp] += score[score.notnull()].values
+                elif comp == '_pca_component_1':
+                    preds.loc[beach_index[score.notnull()], orig_c + comp] += score[score.notnull()].values
+                elif comp in ['_pca_component_' + n for n in '2345']:
+                    preds.loc[beach_index[score.notnull()], orig_c + comp[:-1] + 'A'] += \
+                        score[score.notnull()].values
         
-    return pcas, df_pcas, pos_means, neg_means, rs_pvalues
+    return preds
 
 
 if __name__ == '__main__':
