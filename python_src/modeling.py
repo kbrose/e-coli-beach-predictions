@@ -353,7 +353,8 @@ def prepare_data(df=None):
         grp_df.columns = ['_'.join([str(x) for x in col]) for col in grp_df.columns.values]
 
         df = df.merge(grp_df, how='left', left_on='Full_date', right_index=True)
-    
+
+
     ######################################################
     #### PCA + Filters
     ######################################################
@@ -548,10 +549,12 @@ def pca_filters(df, T, original_cols,
     preds = df[[beach_col, time_col]]
     
     for b in preds[beach_col].unique():
+        print(b)
         beach_index = preds.index[preds[beach_col] == b]
         beach_times = preds.loc[preds[beach_col] == b, time_col]
         
         for orig_c in original_cols:
+            print('\t' + orig_c)
             if orig_c in [time_col, beach_col, ecoli_col]:
                 continue
             preds[orig_c + '_pca_component_0'] = 0
